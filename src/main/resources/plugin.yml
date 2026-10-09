@@ -59,6 +59,7 @@ softdepend:
   - WorldGuard
   - Factions
   - ProtocolLib
+  - packetevents
   - LWC
   - BlocksHub
   - Lands

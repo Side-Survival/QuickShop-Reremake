@@ -489,12 +489,12 @@ public class QuickShop extends JavaPlugin implements QuickShopAPI {
         if (this.display) {
             //VirtualItem support
             if (AbstractDisplayItem.getNowUsing() == DisplayType.VIRTUALITEM) {
-                getLogger().info("Using Virtual Item display, loading ProtocolLib support...");
-                Plugin protocolLibPlugin = Bukkit.getPluginManager().getPlugin("ProtocolLib");
-                if (protocolLibPlugin != null && Util.verifyClassLoader(protocolLibPlugin) && protocolLibPlugin.isEnabled()) {
-                    getLogger().info("Successfully loaded ProtocolLib support!");
+                getLogger().info("Using Virtual Item display, loading PacketEvents support...");
+                Plugin packetEventsPlugin = Bukkit.getPluginManager().getPlugin("packetevents");
+                if (packetEventsPlugin != null && packetEventsPlugin.isEnabled()) {
+                    getLogger().info("Successfully loaded PacketEvents support!");
                 } else {
-                    getLogger().warning("Failed to load ProtocolLib support, fallback to real item display");
+                    getLogger().warning("Failed to load PacketEvents support, fallback to real item display");
                     getConfig().set("shop.display-type", 0);
                     saveConfiguration();
                 }

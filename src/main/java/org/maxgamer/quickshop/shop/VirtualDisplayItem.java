@@ -18,24 +18,28 @@
  */
 package org.maxgamer.quickshop.shop;
 
-import com.comphenix.protocol.PacketType;
-import com.comphenix.protocol.ProtocolLibrary;
-import com.comphenix.protocol.ProtocolManager;
-import com.comphenix.protocol.events.ListenerPriority;
-import com.comphenix.protocol.events.PacketAdapter;
-import com.comphenix.protocol.events.PacketContainer;
-import com.comphenix.protocol.events.PacketEvent;
-import com.comphenix.protocol.reflect.StructureModifier;
-import com.comphenix.protocol.utility.MinecraftVersion;
-import com.comphenix.protocol.wrappers.WrappedChatComponent;
-import com.comphenix.protocol.wrappers.WrappedDataValue;
-import com.comphenix.protocol.wrappers.WrappedDataWatcher;
-import com.comphenix.protocol.wrappers.WrappedWatchableObject;
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.event.PacketListenerAbstract;
+import com.github.retrooper.packetevents.event.PacketListenerCommon;
+import com.github.retrooper.packetevents.event.PacketListenerPriority;
+import com.github.retrooper.packetevents.event.PacketSendEvent;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
+import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
+import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.util.Vector3d;
+import com.github.retrooper.packetevents.wrapper.PacketWrapper;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
+import io.github.retrooper.packetevents.util.SpigotConversionUtil;
+import net.md_5.bungee.api.chat.TextComponent;
+import net.md_5.bungee.chat.ComponentSerializer;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
@@ -45,7 +49,6 @@ import org.maxgamer.quickshop.api.event.ShopDisplayItemSpawnEvent;
 import org.maxgamer.quickshop.api.shop.AbstractDisplayItem;
 import org.maxgamer.quickshop.api.shop.DisplayType;
 import org.maxgamer.quickshop.api.shop.Shop;
-import org.maxgamer.quickshop.util.GameVersion;
 import org.maxgamer.quickshop.util.Util;
 
 import java.util.ArrayList;
@@ -62,13 +65,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
 
+/**
+ * Client-side display item, sent through PacketEvents so packet formats follow the server's Minecraft version.
+ */
 public class VirtualDisplayItem extends AbstractDisplayItem {
     private static final AtomicInteger COUNTER = new AtomicInteger(Integer.MAX_VALUE);
-    private static final GameVersion VERSION = QuickShop.getInstance().getGameVersion();
-    private static final ProtocolManager PROTOCOL_MANAGER = ProtocolLibrary.getProtocolManager();
-    private static PacketAdapter packetAdapter = null;
+    // Item entity metadata slot holding the ItemStack (base entity data uses slots 0-7)
+    private static final int ITEM_STACK_DATA_INDEX = 8;
+    private static PacketListenerCommon packetListener = null;
     //unique EntityID
     private final int entityID = COUNTER.decrementAndGet();
     //The List which store packet sender
@@ -79,10 +84,10 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
     //If packet initialized
     private volatile boolean initialized = false;
     //packets
-    private PacketContainer fakeItemSpawnPacket;
-    private PacketContainer fakeItemMetaPacket;
-    private PacketContainer fakeItemVelocityPacket;
-    private PacketContainer fakeItemDestroyPacket;
+    private PacketWrapper<?> fakeItemSpawnPacket;
+    private PacketWrapper<?> fakeItemMetaPacket;
+    private PacketWrapper<?> fakeItemVelocityPacket;
+    private PacketWrapper<?> fakeItemDestroyPacket;
 
     public VirtualDisplayItem(@NotNull Shop shop) throws RuntimeException {
         super(shop);
@@ -150,7 +155,7 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
         }
     }
 
-    private void sendPacketToAll(@NotNull PacketContainer packet) {
+    private void sendPacketToAll(@NotNull PacketWrapper<?> packet) {
         Iterator<UUID> iterator = packetSenders.iterator();
         while (iterator.hasNext()) {
             Player nextPlayer = PLUGIN.getServer().getPlayer(iterator.next());
@@ -162,9 +167,9 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
         }
     }
 
-    private void sendPacket(@NotNull Player player, @NotNull PacketContainer packet) {
+    private void sendPacket(@NotNull Player player, @NotNull PacketWrapper<?> packet) {
         try {
-            PROTOCOL_MANAGER.sendServerPacket(player, packet);
+            PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet);
         } catch (Exception e) {
             throw new RuntimeException("An error occurred when sending a packet", e);
         }
@@ -213,13 +218,6 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
         }
 
         load();
-
-        // Can't rely on the attachedShop cache to be accurate
-        // So just try it and if it fails, no biggie
-        /*try {
-            shop.getAttachedShop().updateAttachedShop();
-        } catch (NullPointerException ignored) {
-        }*/
 
         sendFakeItemToAll();
         isDisplay = true;
@@ -278,65 +276,48 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
                 return;
             }
             Util.debugLog("Loading VirtualDisplayItem chunks mapping manager...");
-            if (packetAdapter == null) {
-                packetAdapter = new ChunkPacketAdapter();
+            if (packetListener == null) {
                 Util.debugLog("Registering the packet listener...");
-                PROTOCOL_MANAGER.addPacketListener(packetAdapter);
+                packetListener = PacketEvents.getAPI().getEventManager().registerListener(new ChunkPacketListener());
                 LOADED.set(true);
             }
         }
 
-        private static class ChunkPacketAdapter extends PacketAdapter {
+        private static class ChunkPacketListener extends PacketListenerAbstract {
 
-            private final Class<?> temporaryPlayerClass;
-
-            public ChunkPacketAdapter() {
-                super(PLUGIN, ListenerPriority.HIGH, PacketType.Play.Server.MAP_CHUNK);
-                Class<?> localTemporaryPlayerClass;
-                try {
-                    localTemporaryPlayerClass = Class.forName("com.comphenix.protocol.injector.temporary.TemporaryPlayer");
-                } catch (ClassNotFoundException unused1) {
-                    try {
-                        localTemporaryPlayerClass = Class.forName("com.comphenix.protocol.injector.server.TemporaryPlayer");
-                    } catch (ClassNotFoundException unused2) {
-                        plugin.getLogger().log(Level.WARNING, "Failed to find temporaryPlayer class! Please contact QuickShop author!");
-                        localTemporaryPlayerClass = this.getClass();
-                    }
-                }
-                this.temporaryPlayerClass = localTemporaryPlayerClass;
+            ChunkPacketListener() {
+                super(PacketListenerPriority.HIGH);
             }
 
             @Override
-            public void onPacketSending(@NotNull PacketEvent event) {
-                //is really full chunk data
-                //In 1.17, this value was removed, so read safely
-                Boolean boxedIsFull = event.getPacket().getBooleans().readSafely(0);
-                boolean isFull = boxedIsFull == null || boxedIsFull;
-                if (!isFull) {
+            public void onPacketSend(@NotNull PacketSendEvent event) {
+                if (event.getPacketType() != PacketType.Play.Server.CHUNK_DATA) {
                     return;
                 }
-                Player player = event.getPlayer();
-                if (temporaryPlayerClass.isInstance(player)) {
+                Object eventPlayer = event.getPlayer();
+                if (!(eventPlayer instanceof Player)) {
                     return;
                 }
-                if (player == null || !player.isOnline()) {
-                    return;
-                }
-                StructureModifier<Integer> integerStructureModifier = event.getPacket().getIntegers();
-                //chunk x
-                int x = integerStructureModifier.read(0);
-                //chunk z
-                int z = integerStructureModifier.read(1);
-
-                CHUNKS_MAPPING.computeIfPresent(new SimpleShopChunk(player.getWorld().getName(), x, z), (chunkLocation, targetList) -> {
-                    for (VirtualDisplayItem target : targetList) {
-                        if (!target.shop.isLoaded() || !target.isDisplay || target.shop.isLeftShop()) {
-                            continue;
-                        }
-                        target.packetSenders.add(player.getUniqueId());
-                        target.sendFakeItem(player);
+                Player player = (Player) eventPlayer;
+                // Read only chunk x/z instead of decoding the whole chunk; PacketEvents restores the buffer afterwards
+                PacketWrapper<?> wrapper = new PacketWrapper<>(event, false);
+                int x = wrapper.readInt();
+                int z = wrapper.readInt();
+                // We are on the netty thread: hop to main so the entity follows the chunk and world access is safe
+                PLUGIN.getServer().getScheduler().runTask(PLUGIN, () -> {
+                    if (!player.isOnline()) {
+                        return;
                     }
-                    return targetList;
+                    CHUNKS_MAPPING.computeIfPresent(new SimpleShopChunk(player.getWorld().getName(), x, z), (chunkLocation, targetList) -> {
+                        for (VirtualDisplayItem target : targetList) {
+                            if (!target.shop.isLoaded() || !target.isDisplay || target.shop.isLeftShop()) {
+                                continue;
+                            }
+                            target.packetSenders.add(player.getUniqueId());
+                            target.sendFakeItem(player);
+                        }
+                        return targetList;
+                    });
                 });
             }
 
@@ -346,7 +327,8 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
             Util.debugLog("Unloading VirtualDisplayItem chunks mapping manager...");
             if (LOADED.get()) {
                 Util.debugLog("Unregistering the packet listener...");
-                PROTOCOL_MANAGER.removePacketListener(packetAdapter);
+                PacketEvents.getAPI().getEventManager().unregisterListener(packetListener);
+                packetListener = null;
                 LOADED.set(false);
             }
         }
@@ -356,7 +338,7 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
         public static Throwable testFakeItem() {
             try {
                 createFakeItemSpawnPacket(0, new Location(PLUGIN.getServer().getWorlds().get(0), 0, 0, 0));
-                createFakeItemMetaPacket(0, new ItemStack(Material.values()[0]));
+                createFakeItemMetaPacket(0, new ItemStack(Material.STONE));
                 createFakeItemVelocityPacket(0);
                 createFakeItemDestroyPacket(0);
                 return null;
@@ -365,172 +347,30 @@ public class VirtualDisplayItem extends AbstractDisplayItem {
             }
         }
 
-        private static PacketContainer createFakeItemSpawnPacket(int entityID, Location displayLocation) {
-            //First, create a new packet to spawn item
-            PacketContainer fakeItemPacket = PROTOCOL_MANAGER.createPacket(PacketType.Play.Server.SPAWN_ENTITY);
-
-            //and add data based on packet class in NMS  (global scope variable)
-            //Reference: https://wiki.vg/Protocol#Spawn_Object
-            StructureModifier<Integer> integerStructureModifier = fakeItemPacket.getIntegers();
-            integerStructureModifier
-                    //Entity ID
-                    .write(0, entityID);
-            //Removed since it was changed to byte since 1.19 and init value is zero
-            //Velocity x
-            //.write(1, 0)
-            //Velocity y
-            //.write(2, 0)
-            //Velocity z
-            //.write(3, 0);
-            //Pitch
-            //.write(4, 0)
-            //Yaw
-            //.write(5, 0);
-
-            //noinspection SwitchStatementWithTooFewBranches
-            switch (VERSION) {
-//                case v1_13_R1:
-//                case v1_13_R2:
-//                    fakeItemPacket.getIntegers()
-//                            //For 1.13, we should use type id to represent the EntityType
-//                            //2 -> minecraft:item (Object ID:https://wiki.vg/Object_Data)
-//                            .write(6, 2)
-//                            //int data to mark
-//                            .write(7, 1);
-//                    break;
-                //int data to mark
-                default:
-                    //For 1.14+, we should use EntityType
-                    fakeItemPacket.getEntityTypeModifier().write(0, EntityType.ITEM);
-                    if (VERSION.ordinal() < GameVersion.v1_19_R1.ordinal()) {
-                        //int data to marking there have velocity (at last field)
-                        integerStructureModifier.write(integerStructureModifier.getFields().size() - 1, 1);
-                    }
-            }
-//        if (version == 13) {
-//            //for 1.13, we should use type id to represent the EntityType
-//            //2->minecraft:item (Object ID:https://wiki.vg/Object_Data)
-//            fakeItemPacket.getIntegers().write(6, 2);
-//            //int data to mark
-//            fakeItemPacket.getIntegers().write(7, 1);
-//        } else {
-//            //for 1.14+, we should use EntityType
-//            fakeItemPacket.getEntityTypeModifier().write(0, EntityType.DROPPED_ITEM);
-//            //int data to mark
-//            fakeItemPacket.getIntegers().write(6, 1);
-//        }
-            //UUID
-            fakeItemPacket.getUUIDs().write(0, UUID.randomUUID());
-            //Location
-            fakeItemPacket.getDoubles()
-                    //X
-                    .write(0, displayLocation.getX())
-                    //Y
-                    .write(1, displayLocation.getY())
-                    //Z
-                    .write(2, displayLocation.getZ());
-            return fakeItemPacket;
+        private static PacketWrapper<?> createFakeItemSpawnPacket(int entityID, Location displayLocation) {
+            return new WrapperPlayServerSpawnEntity(entityID, Optional.of(UUID.randomUUID()), EntityTypes.ITEM,
+                    new Vector3d(displayLocation.getX(), displayLocation.getY(), displayLocation.getZ()),
+                    0f, 0f, 0f, 0, Optional.of(new Vector3d(0, 0, 0)));
         }
 
-        private static PacketContainer createFakeItemMetaPacket(int entityID, ItemStack itemStack) {
-            //Next, create a new packet to update item data (default is empty)
-            PacketContainer fakeItemMetaPacket = PROTOCOL_MANAGER.createPacket(PacketType.Play.Server.ENTITY_METADATA);
-            //Entity ID
-            fakeItemMetaPacket.getIntegers().write(0, entityID);
-
-            //List<DataWatcher$Item> Type are more complex
-            //Create a DataWatcher
-            WrappedDataWatcher wpw = new WrappedDataWatcher();
-            //https://wiki.vg/index.php?title=Entity_metadata#Entity
+        private static PacketWrapper<?> createFakeItemMetaPacket(int entityID, ItemStack itemStack) {
+            List<EntityData<?>> data = new ArrayList<>();
             if (PLUGIN.getConfig().getBoolean("shop.display-item-use-name")) {
-                String itemName;
-                if (QuickShop.isTesting()) {
-                    //Env Testing
-                    itemName = itemStack.getType().name();
-                } else {
-                    itemName = Util.getItemStackName(itemStack);
-                }
-                wpw.setObject(2, WrappedDataWatcher.Registry.getChatComponentSerializer(true), Optional.of(WrappedChatComponent.fromLegacyText(itemName).getHandle()));
-                wpw.setObject(new WrappedDataWatcher.WrappedDataWatcherObject(3, WrappedDataWatcher.Registry.get(Boolean.class)), true);
+                String itemName = QuickShop.isTesting() ? itemStack.getType().name() : Util.getItemStackName(itemStack);
+                data.add(new EntityData<>(2, EntityDataTypes.OPTIONAL_COMPONENT, Optional.of(ComponentSerializer.toString(TextComponent.fromLegacyText(itemName)))));
+                data.add(new EntityData<>(3, EntityDataTypes.BOOLEAN, true));
             }
-
-            //Must in the certain slot:https://wiki.vg/Entity_metadata#Item
-            //Is 1.17-?
-            if (VERSION.ordinal() < GameVersion.v1_17_R1.ordinal()) {
-//                if (version == GameVersion.v1_13_R1 || version == GameVersion.v1_13_R2) {
-//                    //For 1.13 is 6
-//                    wpw.setObject(6, WrappedDataWatcher.Registry.getItemStackSerializer(false), itemStack);
-//                } else {
-                //1.14-1.16 is 7
-                wpw.setObject(7, WrappedDataWatcher.Registry.getItemStackSerializer(false), itemStack);
-                // }
-            } else {
-                //1.17+ is 8
-                wpw.setObject(8, WrappedDataWatcher.Registry.getItemStackSerializer(false), itemStack);
-            }
-            //Add it
-            //For 1.19.2+, we need to use DataValue instead of WatchableObject
-            if (VERSION.ordinal() > GameVersion.v1_19_R1.ordinal()) {
-                //Check for new version protocolLib
-                try {
-                    Class.forName("com.comphenix.protocol.wrappers.WrappedDataValue");
-                } catch (ClassNotFoundException e) {
-                    throw new RuntimeException("Unable to initialize packet, ProtocolLib update needed", e);
-                }
-                //Convert List<WrappedWatchableObject> to List<WrappedDataValue>
-                List<WrappedWatchableObject> wrappedWatchableObjects = wpw.getWatchableObjects();
-                List<WrappedDataValue> wrappedDataValues = new java.util.LinkedList<>();
-                for (WrappedWatchableObject wrappedWatchableObject : wrappedWatchableObjects) {
-                    WrappedDataWatcher.WrappedDataWatcherObject watchableObject = wrappedWatchableObject.getWatcherObject();
-                    wrappedDataValues.add(new WrappedDataValue(watchableObject.getIndex(), watchableObject.getSerializer(), wrappedWatchableObject.getRawValue()));
-                }
-                fakeItemMetaPacket.getDataValueCollectionModifier().write(0, wrappedDataValues);
-            } else {
-                fakeItemMetaPacket.getWatchableCollectionModifier().write(0, wpw.getWatchableObjects());
-            }
-            return fakeItemMetaPacket;
+            data.add(new EntityData<>(ITEM_STACK_DATA_INDEX, EntityDataTypes.ITEMSTACK, SpigotConversionUtil.fromBukkitItemStack(itemStack)));
+            return new WrapperPlayServerEntityMetadata(entityID, data);
         }
 
-        private static PacketContainer createFakeItemVelocityPacket(int entityID) {
-            //And, create a entity velocity packet to make it at a proper location (otherwise it will fly randomly)
-            PacketContainer fakeItemVelocityPacket = PROTOCOL_MANAGER.createPacket(PacketType.Play.Server.ENTITY_VELOCITY);
-            fakeItemVelocityPacket.getIntegers()
-                    //Entity ID
-                    .write(0, entityID)
-                    //Velocity x
-                    .write(1, 0)
-                    //Velocity y
-                    .write(2, 0)
-                    //Velocity z
-                    .write(3, 0);
-            return fakeItemVelocityPacket;
+        private static PacketWrapper<?> createFakeItemVelocityPacket(int entityID) {
+            //Stop the client from giving the item a random spawn velocity
+            return new WrapperPlayServerEntityVelocity(entityID, new Vector3d(0, 0, 0));
         }
 
-        private static PacketContainer createFakeItemDestroyPacket(int entityID) {
-            //Also make a DestroyPacket to remove it
-            PacketContainer fakeItemDestroyPacket = PROTOCOL_MANAGER.createPacket(PacketType.Play.Server.ENTITY_DESTROY);
-            if (VERSION.ordinal() < GameVersion.v1_17_R1.ordinal()) {
-                //On 1.17-, we need to write an integer array
-                //Entity to remove
-                fakeItemDestroyPacket.getIntegerArrays().write(0, new int[]{entityID});
-            } else {
-                //1.17+
-                MinecraftVersion minecraftVersion = PROTOCOL_MANAGER.getMinecraftVersion();
-                if (minecraftVersion.getMajor() == 1 && minecraftVersion.getMinor() == 17 && minecraftVersion.getBuild() == 0) {
-                    //On 1.17, just need to write a int
-                    //Entity to remove
-                    fakeItemDestroyPacket.getIntegers().write(0, entityID);
-                } else {
-                    //On 1.17.1 (maybe 1.17.1+? it's enough, Mojang, stop the changes), we need add the int list
-                    //Entity to remove
-                    try {
-                        fakeItemDestroyPacket.getIntLists().write(0, Collections.singletonList(entityID));
-                    } catch (NoSuchMethodError e) {
-                        throw new RuntimeException("Unable to initialize packet, ProtocolLib update needed", e);
-                    }
-                }
-            }
-            return fakeItemDestroyPacket;
+        private static PacketWrapper<?> createFakeItemDestroyPacket(int entityID) {
+            return new WrapperPlayServerDestroyEntities(entityID);
         }
     }
 }

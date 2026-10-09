@@ -59,11 +59,19 @@ public class ReflectFactory {
 
     static {
         String nmsVersion = getNMSVersion();
+        // Paper 1.20.5+ has no version suffix (org.bukkit.craftbukkit), so use the real package instead of guessing
+        String craftBukkitPackage = Bukkit.getServer().getClass().getPackage().getName();
 
         try {
+            craftServerClass = Class.forName(craftBukkitPackage + ".CraftServer");
             craftItemStack_asNMSCopyMethod =
-                    Class.forName("org.bukkit.craftbukkit." + nmsVersion + ".inventory.CraftItemStack")
+                    Class.forName(craftBukkitPackage + ".inventory.CraftItemStack")
                             .getDeclaredMethod("asNMSCopy", ItemStack.class);
+        } catch (Exception t) {
+            QuickShop.getInstance().getLogger().log(Level.WARNING, "Failed to load CraftBukkit classes", t);
+        }
+
+        try {
 
             GameVersion gameVersion = GameVersion.get(nmsVersion);
             if (gameVersion.isNewNmsName()) {
@@ -87,10 +95,9 @@ public class ReflectFactory {
                 nbtTagCompoundClass = Class.forName("net.minecraft.server." + nmsVersion + ".NBTTagCompound");
                 itemStack_saveMethod = Class.forName("net.minecraft.server." + nmsVersion + ".ItemStack").getDeclaredMethod("save", nbtTagCompoundClass);
             }
-            craftServerClass = Class.forName("org.bukkit.craftbukkit." + nmsVersion + ".CraftServer");
-
         } catch (Exception t) {
-            QuickShop.getInstance().getLogger().log(Level.WARNING, "Failed to loading up net.minecraft.server support module, usually this caused by NMS changes but QuickShop not support yet, Did you have up-to-date?", t);
+            // 1.20.5+ ItemStack has no NBT save method anymore; item hover in chat falls back to plain text
+            Util.debugLog("NBT item serializer unavailable: " + t);
         }
     }
 

@@ -360,18 +360,13 @@ public final class EnvironmentChecker {
 
     @EnvCheckEntry(name = "Virtual DisplayItem Support Test", priority = 7)
     public ResultContainer virtualDisplaySupportTest() {
-        String nmsVersion = ReflectFactory.getNMSVersion();
-        GameVersion gameVersion = GameVersion.get(nmsVersion);
         Throwable throwable;
-        if (!gameVersion.isVirtualDisplaySupports()) {
-            throwable = new IllegalStateException("This game version " + gameVersion + " not supports Virtual DisplayItem.");
+        // PacketEvents handles protocol differences, so the game version no longer decides support
+        if (plugin.getServer().getPluginManager().isPluginEnabled("packetevents")) {
+            throwable = VirtualDisplayItem.PacketFactory.testFakeItem();
         } else {
-            if (plugin.getServer().getPluginManager().getPlugin("ProtocolLib") != null) {
-                throwable = VirtualDisplayItem.PacketFactory.testFakeItem();
-            } else {
-                AbstractDisplayItem.setNotSupportVirtualItem(true);
-                return new ResultContainer(CheckResult.WARNING, "ProtocolLib is not installed, virtual DisplayItem seems will not work on your server.");
-            }
+            AbstractDisplayItem.setNotSupportVirtualItem(true);
+            return new ResultContainer(CheckResult.WARNING, "PacketEvents is not installed, virtual DisplayItem will not work on your server.");
         }
         if (throwable != null) {
             Util.debugLog(throwable.getMessage());
@@ -379,7 +374,7 @@ public final class EnvironmentChecker {
             AbstractDisplayItem.setNotSupportVirtualItem(true);
             //do not throw
             plugin.getLogger().log(Level.SEVERE, "Virtual DisplayItem Support Test: Failed to initialize VirtualDisplayItem", throwable);
-            return new ResultContainer(CheckResult.WARNING, "Virtual DisplayItem seems to not work on this Minecraft server, Make sure QuickShop, ProtocolLib and server builds are up to date.");
+            return new ResultContainer(CheckResult.WARNING, "Virtual DisplayItem seems to not work on this Minecraft server, Make sure QuickShop, PacketEvents and server builds are up to date.");
         } else {
             return new ResultContainer(CheckResult.PASSED, "Passed checks");
         }
